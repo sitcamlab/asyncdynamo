@@ -1,5 +1,5 @@
 import os
-from distutils.core import setup
+from setuptools import setup
 
 # also update version in __init__.py
 version = '0.2.6'
@@ -18,7 +18,7 @@ setup(
         "License :: OSI Approved :: Apache Software License",
     ],
     packages=['asyncdynamo'],
-    install_requires=['tornado', 'boto>=2.3.0'],
+    install_requires=['tornado', 'boto>=2.3.0', 'simplejson'],
     requires=['tornado'],
     download_url="http://github.com/downloads/bitly/asyncdynamo/asyncdynamo-%s.tar.gz" % version,
 )
