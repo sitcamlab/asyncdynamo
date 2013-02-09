@@ -22,8 +22,8 @@ class PutException(Exception):
 
 class GenDynamo(object):
 
-    def __init__(self, *args):
-        self._db = asyncdynamo.AsyncDynamoDB(*args)
+    def __init__(self, *args, **kwargs):
+        self._db = asyncdynamo.AsyncDynamoDB(*args, **kwargs)
 
     def __getattr__(self, name):
         return GenTableProxy(self._db, name)
