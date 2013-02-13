@@ -18,7 +18,7 @@ setup(
         "License :: OSI Approved :: Apache Software License",
     ],
     packages=['asyncdynamo'],
-    install_requires=['tornado', 'boto>=2.3.0', 'simplejson'],
+    install_requires=['tornado', 'boto', 'simplejson'],
     requires=['tornado'],
     download_url="http://github.com/downloads/bitly/asyncdynamo/asyncdynamo-%s.tar.gz" % version,
 )
