@@ -30,9 +30,10 @@ class QueryException(DynamoException):
     pass
 
 
-class QueryChain(object):
+class QueryChain(gen.Task):
 
     def __init__(self, table_proxy, key):
+        super(QueryChain, self).__init__(self)
         self._table_proxy = table_proxy
         self._forward = True
         self._key = key
@@ -56,9 +57,6 @@ class QueryChain(object):
     def desc(self):
         self._forward = False
         return self
-
-    def task(self):
-        return gen.Task(self)
 
     def __call__(self, callback):
 
