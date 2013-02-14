@@ -82,9 +82,6 @@ class QueryChain(object):
 
 class GenDynamo(object):
 
-    GT = "GT"
-    LT = "LT"
-
     def __init__(self, *args, **kwargs):
         self._db = asyncdynamo.AsyncDynamoDB(*args, **kwargs)
 
