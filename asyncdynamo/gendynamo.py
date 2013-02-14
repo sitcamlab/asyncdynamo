@@ -10,17 +10,80 @@ from tornado import gen
 import asyncdynamo
 
 
-class ConcurrentUpdateException(Exception):
+class DynamoException(Exception):
 
     pass
 
 
-class PutException(Exception):
+class ConcurrentUpdateException(DynamoException):
 
     pass
+
+
+class PutException(DynamoException):
+
+    pass
+
+
+class QueryException(DynamoException):
+
+    pass
+
+
+class QueryChain(object):
+
+    def __init__(self, table_proxy, key):
+        self._table_proxy = table_proxy
+        self._forward = True
+        self._key = key
+        self._range = None
+        self._comp = None
+
+    def gt(self, val):
+        self._comp = "GT"
+        self._range = val
+        return self
+
+    def lt(self, val):
+        self._comp = "LT"
+        self._range = val
+        return self
+
+    def asc(self):
+        self._forward = True
+        return self
+
+    def desc(self):
+        self._forward = False
+        return self
+
+    def task(self):
+        return gen.Task(self)
+
+    def __call__(self, callback):
+
+        if None in [self._key, self._range, self._comp]:
+            raise RuntimeError("QueryChain wan't not configured properly")
+
+        key = self._table_proxy._pack_val(self._key)
+
+        callback = functools.partial(self._table_proxy._query_callback, callback)
+
+        range_key_conditions = {
+            "AttributeValueList": [self._table_proxy._pack_val(self._range)],
+            "ComparisonOperator": self._comp
+        }
+
+        self._table_proxy._db.query(self._table_proxy._table_name, key,
+                                   range_key_conditions=range_key_conditions,
+                                   scan_index_forward=self._forward,
+                                   callback=callback)
 
 
 class GenDynamo(object):
+
+    GT = "GT"
+    LT = "LT"
 
     def __init__(self, *args, **kwargs):
         self._db = asyncdynamo.AsyncDynamoDB(*args, **kwargs)
@@ -147,3 +210,12 @@ class GenTableProxy(object):
             else:
                 raise PutException(response.get("message", None))
         callback()
+
+    def query(self, key):
+        return QueryChain(self, key)
+
+    def _query_callback(self, callback, response, error):
+        if "Items" in response:
+            callback(map(self._unpack, response["Items"]))
+        else:
+            raise QueryException(error)
