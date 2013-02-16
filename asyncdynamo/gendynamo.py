@@ -171,6 +171,24 @@ class GenTableProxy(object):
         else:
             callback(None)
 
+    def batch_get(self, keys):
+        return gen.Task(self._batch_get, keys)
+
+    def _batch_get(self, keys, callback):
+        items = {
+            self._table_name: {
+                "Keys": map(self._key, keys)
+            }
+        }
+        cb = functools.partial(self._batch_get_callback, callback)
+        self._db.batch_get_item(items, cb)
+
+    def _batch_get_callback(self, callback, data, error):
+        if error:
+            raise DynamoException((data or {}).get("Message", None))
+        items = data.get("Responses").get(self._table_name).get("Items")
+        callback(map(self._unpack, items))
+
     def put(self, key, data):
         """
         puts data for given key into database
@@ -200,10 +218,10 @@ class GenTableProxy(object):
 
     def _put_callback(self, callback, response, error):
         if error:
-            if "#ConditionalCheckFailedException" in response.get("__type", ""):
+            if "#ConditionalCheckFailedException" in (response or {}).get("__type", ""):
                 raise ConcurrentUpdateException()
             else:
-                raise PutException(response.get("message", None))
+                raise PutException((response or {}).get("Message", None))
         callback()
 
     def query(self, key):
