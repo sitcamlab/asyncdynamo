@@ -155,17 +155,23 @@ class GenTableProxy(object):
     def _new_rev_key(self):
         return os.urandom(2).encode("hex")
 
-    def get(self, key):
+    def get(self, key, range_val=None):
         """
         returns item for given key
         """
-        return gen.Task(self._get, self._key(key))
+        key = self._key(key)
+        if range_val:
+            key.update(RangeKeyElement=self._pack_val(range_val))
+        return gen.Task(self._get, key)
+
 
     def _get(self, key, callback):
         cb = functools.partial(self._get_callback, callback)
         self._db.get_item(self._table_name, key, cb)
 
     def _get_callback(self, callback, response, error):
+        if error:
+            raise DynamoException((response or {}).get("message", None))
         if "Item" in response:
             callback(self._unpack(response["Item"]))
         else:
@@ -221,7 +227,7 @@ class GenTableProxy(object):
             if "#ConditionalCheckFailedException" in (response or {}).get("__type", ""):
                 raise ConcurrentUpdateException()
             else:
-                raise PutException((response or {}).get("Message", None))
+                raise PutException((response or {}).get("message", None))
         callback()
 
     def query(self, key):
