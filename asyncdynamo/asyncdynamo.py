@@ -327,6 +327,16 @@ class AsyncDynamoDB(AWSAuthConnection):
         json_input = json.dumps(data)
         return self.make_request("UpdateItem", json_input, callback=callback)
 
+    def remove_item(self, table_name, key, callback, expected=None):
+        data = {
+            "TableName": table_name,
+            "Key": key
+        }
+        if expected:
+            data["Expected"] = expected
+        json_input = json.dumps(data)
+        return self.make_request("DeleteItem", json_input, callback=callback)
+
     def query(self, table_name, hash_key_value, callback, range_key_conditions=None,
               attributes_to_get=None, limit=None, consistent_read=False,
               scan_index_forward=True, exclusive_start_key=None,

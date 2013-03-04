@@ -26,6 +26,11 @@ class PutException(DynamoException):
     pass
 
 
+class RemoveException(DynamoException):
+
+    pass
+
+
 class QueryException(DynamoException):
 
     pass
@@ -98,10 +103,9 @@ class GetMixin(object):
 
 
     def _get_callback(self, callback, response, error):
-        if error:
-            raise DynamoException((response or {}).get("message", None))
+        self._check_error(response, error)
         if "Item" in response:
-            callback(self._unpack(response["Item"]))
+            callback(self._unpack(response.get("Item")))
         else:
             callback(None)
 
@@ -184,6 +188,34 @@ class PutMixin(object):
         callback(response.get("ConsumedCapacityUnits"))
 
 
+class RemoveMixin(object):
+
+
+    def remove(self, **kwargs):
+        hash_key, range_key, rest = self._extract_keys(kwargs)
+        if rest:
+            raise KeyError("%r arguments are not supported "
+                           "for `get` method" % rest)
+
+        key = self._key(hash_key, range_key)
+
+        expected = {}
+        for attr, value in kwargs.items():
+            expected[attr] = {"Exists": True, "Value": self._pack_val(value)}
+
+        return gen.Task(self._remove, key, expected)
+
+
+    def _remove(self, key, expected, callback):
+        cb = functools.partial(self._remove_callback, callback)
+        self._db.remove_item(self._table_name, key, cb, expected)
+
+
+    def _remove_callback(self, callback, response, error):
+        self._check_error(response, error, cls=RemoveException)
+        callback(response.get("ConsumedCapacityUnits"))
+
+
 class QueryMixin(object):
 
 
@@ -197,7 +229,7 @@ class QueryMixin(object):
 
 
 class GenDynamoTable(GetMixin, BatchGetMixin, IncrementMixin,
-                     PutMixin, QueryMixin):
+                     PutMixin, QueryMixin, RemoveMixin):
 
 
     def __init__(self, hash_key, range_key=None):
@@ -215,12 +247,14 @@ class GenDynamoTable(GetMixin, BatchGetMixin, IncrementMixin,
             raise TypeError("range_key should be int or str")
 
 
-    def _check_error(self, response, error, cls=DynamoException):
+    def _check_error(self, response, error, cls=None):
         if error:
             response = response or {}
             message = response.get("message") or response.get("Message")
-            if "#ConditionalCheckFailedException" in response.get("__type", ""):
-                cls = ConcurrentUpdateException
+            if cls is None:
+                cls = DynamoException
+                if "#ConditionalCheckFailedException" in response.get("__type", ""):
+                    cls = ConcurrentUpdateException
             raise cls(message)
 
 
@@ -317,7 +351,7 @@ class GenDynamoTable(GetMixin, BatchGetMixin, IncrementMixin,
 
     def _key(self, hash_key, range_key=None):
         key = {"HashKeyElement": self._pack_val(hash_key)}
-        if range_key:
+        if range_key is not None:
             key.update(RangeKeyElement=self._pack_val(range_key))
         return key
 
