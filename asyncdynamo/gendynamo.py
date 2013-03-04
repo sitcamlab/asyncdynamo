@@ -79,20 +79,187 @@ class QueryChain(gen.Task):
                                    callback=callback)
 
 
-class GenDynamo(object):
-
-    def __init__(self, *args, **kwargs):
-        self._db = asyncdynamo.AsyncDynamoDB(*args, **kwargs)
-
-    def __getattr__(self, name):
-        return GenTableProxy(self._db, name)
+class GetMixin(object):
 
 
-class GenTableProxy(object):
+    def get(self, **kwargs):
+        hash_key, range_key, rest = self._extract_keys(kwargs)
+        if rest:
+            raise KeyError("%r arguments are not supported "
+                           "for `get` method" % rest)
 
-    def __init__(self, db, name):
-        self._db = db
-        self._table_name = name
+        key = self._key(hash_key, range_key)
+        return gen.Task(self._get, key)
+
+
+    def _get(self, key, callback):
+        cb = functools.partial(self._get_callback, callback)
+        self._db.get_item(self._table_name, key, cb)
+
+
+    def _get_callback(self, callback, response, error):
+        if error:
+            raise DynamoException((response or {}).get("message", None))
+        if "Item" in response:
+            callback(self._unpack(response["Item"]))
+        else:
+            callback(None)
+
+
+class BatchGetMixin(object):
+
+
+    def batch_get(self, items):
+        keys = []
+        for item in items:
+            hash_key, range_key, rest = self._extract_keys(item)
+            if rest:
+                raise KeyError("%r arguments are not supported "
+                               "for `batch_get` method" % rest)
+            keys.append(self._key(hash_key, range_key))
+        get_items = {
+            self._table_name: {
+                "Keys": keys
+            }
+        }
+        return gen.Task(self._batch_get, get_items)
+
+
+    def _batch_get(self, get_items, callback):
+        cb = functools.partial(self._batch_get_callback, callback)
+        self._db.batch_get_item(get_items, cb)
+
+
+    def _batch_get_callback(self, callback, response, error):
+        self._check_error(response, error)
+        items = response.get("Responses").get(self._table_name).get("Items")
+        callback(map(self._unpack, items))
+
+
+class IncrementMixin(object):
+
+
+    def increment(self, **kwargs):
+        hash_key, range_key, rest = self._extract_keys(kwargs)
+        key = self._key(hash_key, range_key)
+        update_data = {}
+        for field, increment in rest.items():
+            update_data[field] = {"Value": self._pack_val(increment),
+                                  "Action": "ADD"}
+        return gen.Task(self._increment, key, update_data)
+
+
+    def _increment(self, key, update_data, callback):
+        cb = functools.partial(self._increment_callback, callback)
+        self._db.update_item(self._table_name, key, update_data, cb)
+
+
+    def _increment_callback(self, callback, response, error):
+        self._check_error(response, error)
+        callback(self._unpack(response.get("Attributes")))
+
+
+class PutMixin(object):
+
+
+    def put(self, **kwargs):
+        self._extract_keys(kwargs)
+
+        if self.range_key_name:
+            expected = {self.range_key_name: {"Exists": False}}
+        else:
+            expected = {self.hash_key_name: {"Exists": False}}
+
+        data = self._pack(kwargs)
+        return gen.Task(self._put, data, expected)
+
+
+    def _put(self, data, expected, callback):
+        cb = functools.partial(self._put_callback, callback)
+        self._db.put_item(self._table_name, data, cb, expected)
+
+
+    def _put_callback(self, callback, response, error):
+        self._check_error(response, error, cls=PutException)
+        callback(response.get("ConsumedCapacityUnits"))
+
+
+class QueryMixin(object):
+
+
+    def query(self, key):
+        return QueryChain(self, key)
+
+
+    def _query_callback(self, callback, response, error):
+        self._check_error(response, error, cls=QueryException)
+        callback(map(self._unpack, response.get("Items")))
+
+
+class GenDynamoTable(GetMixin, BatchGetMixin, IncrementMixin,
+                     PutMixin, QueryMixin):
+
+
+    def __init__(self, hash_key, range_key=None):
+        self.hash_key_type, self.hash_key_name = hash_key
+        if range_key:
+            self.range_key_type, self.range_key_name = range_key
+        else:
+            self.range_key_type = None
+            self.range_key_name = None
+        
+        if self.hash_key_type not in (int, str):
+            raise TypeError("hash_key should be int or str")
+        
+        if self.range_key_type not in (int, str, None):
+            raise TypeError("range_key should be int or str")
+
+
+    def _check_error(self, response, error, cls=DynamoException):
+        if error:
+            response = response or {}
+            message = response.get("message") or response.get("Message")
+            if "#ConditionalCheckFailedException" in response.get("__type", ""):
+                cls = ConcurrentUpdateException
+            raise cls(message)
+
+
+    def _extract_keys(self, data):
+        data = data.copy()
+
+        if self.hash_key_name is None:
+            raise KeyError("hash key '%s' not provided" % self.hash_key_name)
+        
+        hash_key = data.pop(self.hash_key_name)
+
+        if self.hash_key_type is int and not isinstance(hash_key, int):
+            raise ValueError("'%s' should be int but %r provided" %
+                             (self.hash_key_name, hash_key))
+        
+        if self.hash_key_type is str and not isinstance(hash_key, basestring):
+            raise ValueError("'%s' should be string but %r provided" %
+                             (self.hash_key_name, hash_key))
+
+        range_key = None
+        if self.range_key_name:
+
+            if self.range_key_name not in data:
+                raise KeyError("range key '%s' not provided" %
+                               self.range_key_name)
+
+            range_key = data.pop(self.range_key_name)
+
+            if self.range_key_type is int and not isinstance(range_key, int):
+                raise ValueError("'%s' should be int but %r provided" %
+                                 (self.range_key_name, range_key))
+
+            if self.range_key_type is str and\
+                         not isinstance(range_key, basestring):
+                raise ValueError("'%s' should be string but %r provided" %
+                                 (self.range_key_name, range_key))
+
+        return hash_key, range_key, data
+
 
     def _unpack_val(self, val):
         if "N" in val:
@@ -105,6 +272,7 @@ class GenTableProxy(object):
             return set(map(int, val["SS"]))
         else:
             raise ValueError("can not unpack %r", val)
+
 
     def _pack_val(self, val):
         if isinstance(val, int):
@@ -138,127 +306,39 @@ class GenTableProxy(object):
             raise ValueError("can not pack %r" % val)
         return {keytype: val}
 
+
     def _unpack(self, item):
         return dict((k, self._unpack_val(v)) for k, v in item.items())
+
 
     def _pack(self, item):
         return dict((k, self._pack_val(v)) for k, v in item.items())
 
-    def _key(self, val):
-        if isinstance(val, int):
-            keytype = "N"
-        elif isinstance(val, basestring):
-            keytype = "S"
-        else:
-            raise ValueError("%r is not valid key for dynamo" % val)
-        return {"HashKeyElement": {keytype: val}}
 
-    def _new_rev_key(self):
-        return os.urandom(2).encode("hex")
-
-    def get(self, key, range_val=None):
-        """
-        returns item for given key
-        """
-        key = self._key(key)
-        if range_val:
-            key.update(RangeKeyElement=self._pack_val(range_val))
-        return gen.Task(self._get, key)
-
-
-    def _get(self, key, callback):
-        cb = functools.partial(self._get_callback, callback)
-        self._db.get_item(self._table_name, key, cb)
-
-    def _get_callback(self, callback, response, error):
-        if error:
-            raise DynamoException((response or {}).get("message", None))
-        if "Item" in response:
-            callback(self._unpack(response["Item"]))
-        else:
-            callback(None)
-
-    def batch_get(self, keys):
-        return gen.Task(self._batch_get, keys)
-
-    def _batch_get(self, keys, callback):
-        items = {
-            self._table_name: {
-                "Keys": map(self._key, keys)
-            }
-        }
-        cb = functools.partial(self._batch_get_callback, callback)
-        self._db.batch_get_item(items, cb)
-
-    def _batch_get_callback(self, callback, data, error):
-        if error:
-            raise DynamoException((data or {}).get("Message", None))
-        items = data.get("Responses").get(self._table_name).get("Items")
-        callback(map(self._unpack, items))
-
-    def put(self, key, data):
-        """
-        puts data for given key into database
-        """
-        if "_rev" in data or "_rev_key" in data or "_id" in data:
-            raise ValueError("new items should not contain `_id`, `_rev` or `_rev_key`")
-        item = dict(data, _id=key, _rev=0, _rev_key=self._new_rev_key())
-        expected = {"_id": {"Exists": False}}
-        return gen.Task(self._put, item, expected)
-
-    def update(self, data, item):
-        """
-        updates data for given item, item should first be retrieved by `get` method
-        """
-        if "_rev" not in item or "_rev_key" not in item or "_id" not in item:
-            raise ValueError("item should contain `_id`, `_rev` and `_rev_key` attributes")
-        rev = item["_rev"] + 1
-        new_item = dict(data, _rev=rev, _rev_key=self._new_rev_key(), _id=item["_id"])
-        expected = {"_id": {"Exists": True, "Value": self._pack_val(item["_id"])},
-                    "_rev": {"Value": self._pack_val(item["_rev"])},
-                    "_rev_key": {"Value": self._pack_val(item["_rev_key"])}}
-        return gen.Task(self._put, new_item, expected)
-
-
-    def increment(self, key, field, value, range_key=None):
-        assert type(value) is types.IntType
-        key = self._key(key)
+    def _key(self, hash_key, range_key=None):
+        key = {"HashKeyElement": self._pack_val(hash_key)}
         if range_key:
-            key["RangeKeyElement"] = self._pack_val(range_key)
-        update_data = {
-            field: {"Value": self._pack_val(value), "Action": "ADD"},
-        }
-        return gen.Task(self._increment, key, update_data)
-
-    def _increment(self, key, update_data, callback):
-        cb = functools.partial(self._increment_callback, callback)
-        self._db.update_item(self._table_name, key, update_data, cb)
-
-    def _increment_callback(self, callback, response, error):
-        if error:
-            resp = response or {}
-            message = resp.get("message") or resp.get("Message")
-            raise DynamoException(message)
-        callback(self._unpack(response.get("Attributes")))
+            key.update(RangeKeyElement=self._pack_val(range_key))
+        return key
 
 
-    def _put(self, data, expected, callback):
-        cb = functools.partial(self._put_callback, callback)
-        self._db.put_item(self._table_name, self._pack(data), cb, expected)
 
-    def _put_callback(self, callback, response, error):
-        if error:
-            if "#ConditionalCheckFailedException" in (response or {}).get("__type", ""):
-                raise ConcurrentUpdateException()
-            else:
-                raise PutException((response or {}).get("message", None))
-        callback()
+class GenDynamo(object):
 
-    def query(self, key):
-        return QueryChain(self, key)
 
-    def _query_callback(self, callback, response, error):
-        if "Items" in response:
-            callback(map(self._unpack, response["Items"]))
-        else:
-            raise QueryException(error)
+    class __metaclass__(type):
+        def __new__(cls, name, bases, dct):
+            tables = []
+            for name, attr in dct.items():
+                if isinstance(attr, GenDynamoTable):
+                    tables.append(name)
+            dct.update(_tables=tables)
+            return type.__new__(cls, name, bases, dct)
+
+
+    def __init__(self, *args, **kwargs):
+        self._db = asyncdynamo.AsyncDynamoDB(*args, **kwargs)
+        for name in self._tables:
+            table = getattr(self, name)
+            table._db = self._db
+            table._table_name = name
