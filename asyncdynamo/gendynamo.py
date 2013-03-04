@@ -3,6 +3,7 @@
 
 import os
 import functools
+import types
 
 from tornado.ioloop import IOLoop
 from tornado import gen
@@ -217,6 +218,29 @@ class GenTableProxy(object):
                     "_rev": {"Value": self._pack_val(item["_rev"])},
                     "_rev_key": {"Value": self._pack_val(item["_rev_key"])}}
         return gen.Task(self._put, new_item, expected)
+
+
+    def increment(self, key, field, value, range_key=None):
+        assert type(value) is types.IntType
+        key = self._key(key)
+        if range_key:
+            key["RangeKeyElement"] = self._pack_val(range_key)
+        update_data = {
+            field: {"Value": self._pack_val(value), "Action": "ADD"},
+        }
+        return gen.Task(self._increment, key, update_data)
+
+    def _increment(self, key, update_data, callback):
+        cb = functools.partial(self._increment_callback, callback)
+        self._db.update_item(self._table_name, key, update_data, cb)
+
+    def _increment_callback(self, callback, response, error):
+        if error:
+            resp = response or {}
+            message = resp.get("message") or resp.get("Message")
+            raise DynamoException(message)
+        callback(self._unpack(response.get("Attributes")))
+
 
     def _put(self, data, expected, callback):
         cb = functools.partial(self._put_callback, callback)
