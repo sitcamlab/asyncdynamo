@@ -12,28 +12,76 @@ import asyncdynamo
 
 
 class DynamoException(Exception):
-
     pass
 
 
 class ConcurrentUpdateException(DynamoException):
-
     pass
 
 
 class PutException(DynamoException):
-
     pass
 
 
 class RemoveException(DynamoException):
-
     pass
 
 
 class QueryException(DynamoException):
-
     pass
+
+
+class ScanException(DynamoException):
+    pass
+
+
+class ScanChain(gen.Task):
+
+    def __init__(self, table_proxy):
+        super(ScanChain, self).__init__(self)
+        self._table_proxy = table_proxy
+        self._forward = True
+        self._scan = None
+        self._comp = None
+        self._limit = None
+
+    def gt(self, val):
+        self._comp = "GT"
+        self._scan = val
+        return self
+
+    def lt(self, val):
+        self._comp = "LT"
+        self._scan = val
+        return self
+
+    def asc(self):
+        self._forward = True
+        return self
+
+    def desc(self):
+        self._forward = False
+        return self
+
+    def limit(self, limit):
+        self._limit = limit
+        return self
+
+    def __call__(self, callback):
+        callback = functools.partial(self._table_proxy._scan_callback, callback)
+        if self._scan:
+            scan_filter = {
+                "AttributeValueList": [self._table_proxy._pack_val(self._scan)],
+                "ComparisonOperator": self._comp
+            }
+        else:
+            scan_filter = None
+
+        self._table_proxy._db.scan(self._table_proxy._table_name,
+                                   limit=self._limit,
+                                   scan_filter=scan_filter,
+                                   callback=callback)
+
 
 
 class QueryChain(gen.Task):
@@ -45,10 +93,15 @@ class QueryChain(gen.Task):
         self._key = key
         self._range = None
         self._comp = None
+        self._limit = None
 
     def gt(self, val):
         self._comp = "GT"
         self._range = val
+        return self
+
+    def limit(self, limit):
+        self._limit = limit
         return self
 
     def lt(self, val):
@@ -81,6 +134,7 @@ class QueryChain(gen.Task):
         self._table_proxy._db.query(self._table_proxy._table_name, key,
                                    range_key_conditions=range_key_conditions,
                                    scan_index_forward=self._forward,
+                                   limit=self._limit,
                                    callback=callback)
 
 
@@ -216,6 +270,16 @@ class RemoveMixin(object):
         callback(response.get("ConsumedCapacityUnits"))
 
 
+class ScanMixin(object):
+
+    def scan(self):
+        return ScanChain(self)
+
+    def _scan_callback(self, callback, response, error):
+        self._check_error(response, error, cls=ScanException)
+        callback(map(self._unpack, response.get("Items")))
+
+
 class QueryMixin(object):
 
 
@@ -229,7 +293,7 @@ class QueryMixin(object):
 
 
 class GenDynamoTable(GetMixin, BatchGetMixin, IncrementMixin,
-                     PutMixin, QueryMixin, RemoveMixin):
+                     PutMixin, QueryMixin, RemoveMixin, ScanMixin):
 
 
     def __init__(self, hash_key, range_key=None):

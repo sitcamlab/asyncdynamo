@@ -400,3 +400,54 @@ class AsyncDynamoDB(AWSAuthConnection):
         json_input = json.dumps(data)
         return self.make_request('Query', body=json_input,
                                  callback=callback, object_hook=object_hook)
+
+    def scan(self, table_name, callback, scan_filter=None,
+              attributes_to_get=None, limit=None, consistent_read=False,
+              exclusive_start_key=None, object_hook=None):
+        '''
+        Perform a scan of DynamoDB.  This version is currently punting
+        and expecting you to provide a full and correct JSON body
+        which is passed as is to DynamoDB.
+        
+        The callback should operate on a dict representing the decoded
+        response from DynamoDB (using the object_hook, if supplied)
+
+        :type table_name: str
+        :param table_name: The name of the table to delete.
+
+        :type scan_filter: dict
+        :param scan_filter: A Python version of the
+            RangeKeyConditions data structure.
+
+        :type attributes_to_get: list
+        :param attributes_to_get: A list of attribute names.
+            If supplied, only the specified attribute names will
+            be returned.  Otherwise, all attributes will be returned.
+
+        :type limit: int
+        :param limit: The maximum number of items to return.
+
+        :type consistent_read: bool
+        :param consistent_read: If True, a consistent read
+            request is issued.  Otherwise, an eventually consistent
+            request is issued.
+
+        :type exclusive_start_key: list or tuple
+        :param exclusive_start_key: Primary key of the item from
+            which to continue an earlier query.  This would be
+            provided as the LastEvaluatedKey in that query.
+        '''
+        data = {'TableName': table_name}
+        if scan_filter:
+            data['ScanFilter'] = scan_filter
+        if attributes_to_get:
+            data['AttributesToGet'] = attributes_to_get
+        if limit:
+            data['Limit'] = limit
+        if consistent_read:
+            data['ConsistentRead'] = True
+        if exclusive_start_key:
+            data['ExclusiveStartKey'] = exclusive_start_key
+        json_input = json.dumps(data)
+        return self.make_request('Scan', body=json_input,
+                                 callback=callback, object_hook=object_hook)
