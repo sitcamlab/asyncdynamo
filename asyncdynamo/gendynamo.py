@@ -242,6 +242,26 @@ class PutMixin(object):
         callback(response.get("ConsumedCapacityUnits"))
 
 
+class UpdateMixin(object):
+
+    def update(self, **kwargs):
+        hash_key, range_key, rest = self._extract_keys(kwargs)
+        key = self._key(hash_key, range_key)
+        update_data = {}
+        for field, value in rest.items():
+            update_data[field] = {"Value": self._pack_val(value),
+                                  "Action": "PUT"}
+        return gen.Task(self._update, key, update_data)
+
+    def _update(self, key, update_data, callback):
+        cb = functools.partial(self._update_callback, callback)
+        self._db.update_item(self._table_name, key, update_data, cb)
+
+    def _update_callback(self, callback, response, error):
+        self._check_error(response, error)
+        callback(self._unpack(response.get("Attributes")))
+
+
 class RemoveMixin(object):
 
 
@@ -293,7 +313,7 @@ class QueryMixin(object):
 
 
 class GenDynamoTable(GetMixin, BatchGetMixin, IncrementMixin,
-                     PutMixin, QueryMixin, RemoveMixin, ScanMixin):
+                     PutMixin, QueryMixin, RemoveMixin, ScanMixin, UpdateMixin):
 
 
     def __init__(self, hash_key, range_key=None):
