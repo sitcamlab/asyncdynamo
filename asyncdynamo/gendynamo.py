@@ -4,6 +4,7 @@
 import os
 import functools
 import types
+import json
 
 from tornado.ioloop import IOLoop
 from tornado import gen
@@ -262,6 +263,27 @@ class UpdateMixin(object):
         callback(self._unpack(response.get("Attributes")))
 
 
+class MassWriteMixin(object):
+
+    def mass_write(self, items):
+        items = map(self._pack, items)
+        return gen.Task(self._mass_write, items)
+
+    def _mass_write(self, items, callback):
+        self._db.make_request("BatchWriteItem", body=json.dumps({
+            "RequestItems": {
+                self._table_name: [
+                    {"PutRequest": {"Item": item}}
+                    for item in items
+                ]
+            }
+        }), callback=functools.partial(self._mass_write_callback, callback))
+
+    def _mass_write_callback(self, callback, response, error):
+        self._check_error(response, error)
+        callback(response.get("Responses", {}))
+
+
 class RemoveMixin(object):
 
 
@@ -313,7 +335,8 @@ class QueryMixin(object):
 
 
 class GenDynamoTable(GetMixin, BatchGetMixin, IncrementMixin,
-                     PutMixin, QueryMixin, RemoveMixin, ScanMixin, UpdateMixin):
+                     PutMixin, QueryMixin, RemoveMixin, ScanMixin,
+                     UpdateMixin, MassWriteMixin):
 
 
     def __init__(self, hash_key, range_key=None):
