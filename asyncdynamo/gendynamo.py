@@ -266,6 +266,8 @@ class UpdateMixin(object):
 class MassWriteMixin(object):
 
     def mass_write(self, items):
+        if len(items) > 25:
+            raise RuntimeError("mass_write accepts not more than 25 items")
         items = map(self._pack, items)
         return gen.Task(self._mass_write, items)
 
@@ -483,3 +485,42 @@ class GenDynamo(object):
             table = getattr(self, name)
             table._db = self._db
             table._table_name = name
+        self._pack = getattr(self, self._tables[0])._pack
+
+    def multi_write(self, **tables):
+        data = {}
+        count = 0
+        for table, items in tables.items():
+            if table not in self._tables:
+                raise RuntimeError("unknown table %r" % table)
+            data[table] = [{"PutRequest": {"Item": self._pack(item)}}
+                           for item in items]
+            count += len(data[table])
+            if count > 25:
+                raise RuntimeError("multi_write accepts not more than 25 items")
+        return gen.Task(self._multi_write, data)
+
+    def multi_delete(self, **tables):
+        data = {}
+        count = 0
+        for table, items in tables.items():
+            tbl = getattr(self, table)
+            del_requests = []
+            for item in items:
+                hash_key, range_key, rest = tbl._extract_keys(item)
+                if rest:
+                    raise RuntimeError("%r can't be handled by multi_delete" % rest)
+                del_requests.append({"DeleteRequest": {"Key": tbl._key(hash_key, range_key)}})
+                count += 1
+                if count > 25:
+                    raise RuntimeError("multi_delete accepts not more than 25 items")
+            data[table] = del_requests
+        return gen.Task(self._multi_write, data)
+
+    def _multi_write(self, data, callback):
+        self._db.make_request("BatchWriteItem", body=json.dumps({
+            "RequestItems": data
+        }), callback=functools.partial(self._multi_write_callback, callback))
+
+    def _multi_write_callback(self, callback, response, error):
+        callback(response.get("Responses", {}))
