@@ -94,6 +94,7 @@ class QueryChain(gen.Task):
         self._key = key
         self._range = None
         self._comp = None
+        self._offset = None
         self._limit = None
 
     def gt(self, val):
@@ -108,6 +109,11 @@ class QueryChain(gen.Task):
     def lt(self, val):
         self._comp = "LT"
         self._range = val
+        return self
+
+    def offset(self, hash_key, range_key=None):
+        self._offset = self._table_proxy._key(hash_key=hash_key,
+                                              range_key=range_key)
         return self
 
     def asc(self):
@@ -126,17 +132,22 @@ class QueryChain(gen.Task):
         key = self._table_proxy._pack_val(self._key)
 
         callback = functools.partial(self._table_proxy._query_callback, callback)
+        if self._offset:
+            exclusive_start_key = self._offset
+        else:
+            exclusive_start_key = None
 
         range_key_conditions = {
             "AttributeValueList": [self._table_proxy._pack_val(self._range)],
             "ComparisonOperator": self._comp
         }
-
-        self._table_proxy._db.query(self._table_proxy._table_name, key,
-                                   range_key_conditions=range_key_conditions,
-                                   scan_index_forward=self._forward,
-                                   limit=self._limit,
-                                   callback=callback)
+        self._table_proxy._db.query(
+            self._table_proxy._table_name, key,
+            range_key_conditions=range_key_conditions,
+            scan_index_forward=self._forward,
+            exclusive_start_key=exclusive_start_key,
+            limit=self._limit,
+            callback=callback)
 
 
 class GetMixin(object):
