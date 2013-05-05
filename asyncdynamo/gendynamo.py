@@ -33,13 +33,19 @@ class ScanException(DynamoException):
 
 class ScanChain(gen.Task):
 
-    def __init__(self, table_proxy):
+    def __init__(self, table_proxy, attrs=None):
         super(ScanChain, self).__init__(self)
         self._table_proxy = table_proxy
         self._forward = True
+        self._attr = attrs
         self._scan = None
         self._comp = None
         self._limit = None
+
+    def eq(self, val):
+        self._comp = "EQ"
+        self._scan = val
+        return self
 
     def gt(self, val):
         self._comp = "GT"
@@ -48,6 +54,21 @@ class ScanChain(gen.Task):
 
     def lt(self, val):
         self._comp = "LT"
+        self._scan = val
+        return self
+
+    def not_contains(self, **val):
+        self._comp = 'NOT_CONTAINS'
+        self._scan = val
+        return self
+
+    def contains(self, **val):
+        self._comp = 'CONTAINS'
+        self._scan = val
+        return self
+
+    def begins_with(self, **val):
+        self._comp = 'BEGINS_WITH'
         self._scan = val
         return self
 
@@ -67,23 +88,28 @@ class ScanChain(gen.Task):
         callback = functools.partial(self._table_proxy._scan_callback,
                                      callback)
         if self._scan:
-            scan_filter = {
+            scan_filter = dict([key, {
                 "AttributeValueList": [self._table_proxy._pack_val(
-                    self._scan)],
+                    value)],
                 "ComparisonOperator": self._comp
-            }
+            }] for key, value in self._scan.items())
         else:
             scan_filter = None
-
         self._table_proxy._db.scan(self._table_proxy._table_name,
                                    limit=self._limit,
+                                   attributes_to_get=self._attr,
                                    scan_filter=scan_filter,
                                    callback=callback)
+
+    def offset(self, hash_key, range_key=None):
+        self._offset = self._table_proxy._key(hash_key=hash_key,
+                                              range_key=range_key)
+        return self
 
 
 class QueryChain(gen.Task):
 
-    def __init__(self, table_proxy, key):
+    def __init__(self, table_proxy, key, attrs=None):
         super(QueryChain, self).__init__(self)
         self._table_proxy = table_proxy
         self._forward = True
@@ -91,10 +117,16 @@ class QueryChain(gen.Task):
         self._range = None
         self._comp = None
         self._offset = None
+        self._attr = attrs
         self._limit = None
 
     def gt(self, val):
         self._comp = "GT"
+        self._range = val
+        return self
+
+    def eq(self, val):
+        self._comp = "EQ"
         self._range = val
         return self
 
@@ -110,6 +142,21 @@ class QueryChain(gen.Task):
     def offset(self, hash_key, range_key=None):
         self._offset = self._table_proxy._key(hash_key=hash_key,
                                               range_key=range_key)
+        return self
+
+    def not_contains(self, val):
+        self._comp = 'NOT_CONTAINS'
+        self._range = val
+        return self
+
+    def contains(self, val):
+        self._comp = 'CONTAINS'
+        self._range = val
+        return self
+
+    def begins_with(self, val):
+        self._comp = 'BEGINS_WITH'
+        self._range = val
         return self
 
     def asc(self):
@@ -138,11 +185,13 @@ class QueryChain(gen.Task):
             "AttributeValueList": [self._table_proxy._pack_val(self._range)],
             "ComparisonOperator": self._comp
         }
+
         self._table_proxy._db.query(
             self._table_proxy._table_name, key,
             range_key_conditions=range_key_conditions,
             scan_index_forward=self._forward,
             exclusive_start_key=exclusive_start_key,
+            attributes_to_get=self._attr,
             limit=self._limit,
             callback=callback)
 
@@ -172,7 +221,7 @@ class GetMixin(object):
 
 class BatchGetMixin(object):
 
-    def batch_get(self, items):
+    def batch_get(self, items, attrs=None):
         keys = []
         for item in items:
             hash_key, range_key, rest = self._extract_keys(item)
@@ -180,10 +229,13 @@ class BatchGetMixin(object):
                 raise KeyError("%r arguments are not supported "
                                "for `batch_get` method" % rest)
             keys.append(self._key(hash_key, range_key))
+        kw = {
+            "Keys": keys
+        }
+        if attrs:
+            kw['AttributesToGet'] = attrs
         get_items = {
-            self._table_name: {
-                "Keys": keys
-            }
+            self._table_name: kw
         }
         return gen.Task(self._batch_get, get_items)
 
@@ -259,6 +311,29 @@ class UpdateMixin(object):
         callback(self._unpack(response.get("Attributes")))
 
 
+class MassDeleteMixin(object):
+
+    def mass_delete(self, keys):
+        if len(keys) > 25:
+            raise RuntimeError("mass_delete accepts not more than 25 keys")
+        keys = map(self._pack, keys)
+        return gen.Task(self._mass_delete, keys)
+
+    def _mass_delete(self, keys, callback):
+        self._db.make_request("BatchWriteItem", body=json.dumps({
+            "RequestItems": {
+                self._table_name: [
+                    {"DeleteRequest": {"Key": key}}
+                    for key in keys
+                ]
+            }
+        }), callback=functools.partial(self._mass_delete_callback, callback))
+
+    def _mass_delete_callback(self, callback, response, error):
+        self._check_error(response, error)
+        callback(response.get("Responses", {}))
+
+
 class MassWriteMixin(object):
 
     def mass_write(self, items):
@@ -309,8 +384,8 @@ class RemoveMixin(object):
 
 class ScanMixin(object):
 
-    def scan(self):
-        return ScanChain(self)
+    def scan(self, attrs=None):
+        return ScanChain(self, attrs=attrs)
 
     def _scan_callback(self, callback, response, error):
         self._check_error(response, error, cls=ScanException)
@@ -319,8 +394,8 @@ class ScanMixin(object):
 
 class QueryMixin(object):
 
-    def query(self, key):
-        return QueryChain(self, key)
+    def query(self, key, attrs=None):
+        return QueryChain(self, key, attrs=attrs)
 
     def _query_callback(self, callback, response, error):
         self._check_error(response, error, cls=QueryException)
@@ -329,7 +404,7 @@ class QueryMixin(object):
 
 class GenDynamoTable(GetMixin, BatchGetMixin, IncrementMixin,
                      PutMixin, QueryMixin, RemoveMixin, ScanMixin,
-                     UpdateMixin, MassWriteMixin):
+                     UpdateMixin, MassDeleteMixin, MassWriteMixin):
 
     def __init__(self, hash_key, range_key=None):
         self.hash_key_type, self.hash_key_name = hash_key
