@@ -198,18 +198,19 @@ class QueryChain(gen.Task):
 
 class GetMixin(object):
 
-    def get(self, **kwargs):
+    def get(self, attrs=None, **kwargs):
         hash_key, range_key, rest = self._extract_keys(kwargs)
+        self._attr = attrs
         if rest:
             raise KeyError("%r arguments are not supported "
                            "for `get` method" % rest)
-
         key = self._key(hash_key, range_key)
         return gen.Task(self._get, key)
 
     def _get(self, key, callback):
         cb = functools.partial(self._get_callback, callback)
-        self._db.get_item(self._table_name, key, cb)
+        self._db.get_item(self._table_name, key, attributes_to_get=self._attr,
+                          callback=cb)
 
     def _get_callback(self, callback, response, error):
         self._check_error(response, error)
